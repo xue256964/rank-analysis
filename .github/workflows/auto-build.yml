@@ -25,36 +25,12 @@ jobs:
       - name: 安装依赖
         run: npm install
 
-      - name: 准备前端与修复配置 (绝对路径)
+      - name: 创建空前端目录并直接打包（强制覆盖配置）
         shell: bash
         run: |
-          node -e '
-            const fs = require("fs");
-            const path = require("path");
-            const base = process.env.GITHUB_WORKSPACE;
-            // 1. 创建 dist 占位文件
-            const distDir = path.join(base, "dist");
-            if (!fs.existsSync(distDir)) fs.mkdirSync(distDir);
-            fs.writeFileSync(path.join(distDir, "index.html"), "<!DOCTYPE html><html><body><h1>Placeholder</h1></body></html>");
-            // 2. 修改 tauri.conf.json
-            const configPath = path.join(base, "src-tauri", "tauri.conf.json");
-            let config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-            function replaceDistDir(obj) {
-              for (let key in obj) {
-                if (key === "distDir" && typeof obj[key] === "string") {
-                  obj[key] = "../dist";
-                } else if (typeof obj[key] === "object" && obj[key] !== null) {
-                  replaceDistDir(obj[key]);
-                }
-              }
-            }
-            replaceDistDir(config);
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-            console.log("Config updated, distDir set to ../dist");
-          '
-
-      - name: 编译项目
-        run: tauri build
+          mkdir -p dist
+          echo "<!DOCTYPE html><html><body></body></html>" > dist/index.html
+          tauri build -c '{"build":{"distDir":"../dist","beforeBuildCommand":""}}'
 
       - name: 上传到服务器
         uses: appleboy/scp-action@v0.1.7
