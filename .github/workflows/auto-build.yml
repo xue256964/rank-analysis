@@ -1,29 +1,25 @@
 name: 自动构建并上传到服务器
-
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 2 * * *'
-
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: 安装 Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
-
       - name: 编译项目
         run: |
           npm install
           npm run tauri build
-
       - name: 上传到服务器
         uses: appleboy/scp-action@v0.1.7
         with:
