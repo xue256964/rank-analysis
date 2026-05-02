@@ -21,15 +21,27 @@ jobs:
       - name: 安装依赖
         run: npm install
       - name: 准备前端与修复配置
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Set-Content -Path dist/index.html -Value "<!DOCTYPE html><html><body><h1>Placeholder</h1></body></html>"
-          $configPath = "src-tauri\tauri.conf.json"
-          $content = Get-Content $configPath -Raw
-          $content = $content -replace '"distDir":\s*"[^"]*"', '"distDir": "..\dist"'
-          $content | Set-Content $configPath -NoNewline
-          Write-Host "Config updated"
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("dist")) fs.mkdirSync("dist");
+            fs.writeFileSync("dist/index.html", "<!DOCTYPE html><html><body><h1>Placeholder</h1></body></html>");
+            const configPath = "src-tauri/tauri.conf.json";
+            let config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+            function replaceDistDir(obj) {
+              for (let key in obj) {
+                if (key === "distDir" && typeof obj[key] === "string") {
+                  obj[key] = "../dist";
+                } else if (typeof obj[key] === "object") {
+                  replaceDistDir(obj[key]);
+                }
+              }
+            }
+            replaceDistDir(config);
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+            console.log("Config updated");
+          '
       - name: 编译项目
         run: tauri build
       - name: 上传到服务器
