@@ -25,17 +25,21 @@ jobs:
       - name: 安装依赖
         run: npm install
 
-      - name: 创建前端占位文件（解决 “Unable to find your web assets”）
+      - name: 创建前端占位文件
+        shell: pwsh
         run: |
-          mkdir -p dist
-          echo "<!DOCTYPE html><html><body><h1>Placeholder</h1></body></html>" > dist/index.html
+          New-Item -ItemType Directory -Force -Path dist
+          Set-Content -Path dist/index.html -Value "<!DOCTYPE html><html><body><h1>Placeholder</h1></body></html>"
 
       - name: 修改 tauri 配置指向 dist
+        shell: pwsh
         run: |
-          # 备份原配置
-          cp src-tauri/tauri.conf.json src-tauri/tauri.conf.json.bak
-          # 修改 distDir 为相对路径 ../dist
-          (Get-Content src-tauri/tauri.conf.json -Raw) -replace '"distDir":\s*"[^"]*"', '"distDir": "../dist"' | Set-Content src-tauri/tauri.conf.json
+          $configPath = "src-tauri/tauri.conf.json"
+          Copy-Item -Path $configPath -Destination "$configPath.bak" -Force
+          $content = Get-Content $configPath -Raw
+          $content = $content -replace '"distDir":\s*"[^"]*"', '"distDir": "../dist"'
+          $content | Set-Content $configPath -NoNewline
+          Write-Host "tauri.conf.json updated"
 
       - name: 编译项目
         run: tauri build
