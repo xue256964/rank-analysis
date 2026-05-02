@@ -9,19 +9,26 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: 签出原作者完整仓库
+        run: git clone https://github.com/wnzzer/rank-analysis.git .
+
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - name: 安装 Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+
       - name: 安装 Tauri CLI
         run: npm install -g @tauri-apps/cli
+
       - name: 安装依赖
         run: npm install
+
       - name: 编译项目
         run: tauri build
+
       - name: 上传到服务器
         uses: appleboy/scp-action@v0.1.7
         with:
