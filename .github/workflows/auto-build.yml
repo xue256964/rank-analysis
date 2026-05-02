@@ -23,9 +23,20 @@ jobs:
             });
             return data;
 
-      - name: 下载安装包
+      - name: 下载并重命名安装包
         run: |
-          echo '${{ steps.release.outputs.result }}' | jq -r '.assets[].browser_download_url' | grep -E '\.(msi|exe)$' | xargs -I {} curl -L -O {}
+          URLS=$(echo '${{ steps.release.outputs.result }}' | jq -r '.assets[].browser_download_url')
+          for url in $URLS; do
+            curl -L -O "$url"
+          done
+          # 重命名为简单文件名，避免 tar 报错
+          for f in *.exe; do
+            [ -f "$f" ] && mv "$f" "lol-record-analysis-setup.exe" && break
+          done
+          for f in *.msi; do
+            [ -f "$f" ] && mv "$f" "lol-record-analysis-installer.msi" && break
+          done
+          ls -la
 
       - name: 上传到服务器
         uses: appleboy/scp-action@v0.1.7
@@ -33,6 +44,6 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "*.msi,*.exe"
+          source: "lol-record-analysis-setup.exe,lol-record-analysis-installer.msi"
           target: ${{ secrets.SERVER_PATH }}
           strip_components: 0
