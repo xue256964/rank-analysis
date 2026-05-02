@@ -25,6 +25,9 @@ jobs:
       - name: 安装依赖
         run: npm install
 
+      - name: 添加空构建脚本（跳过前置构建）
+        run: npm pkg set scripts.build="echo No build step"
+
       - name: 编译项目
         run: tauri build
 
