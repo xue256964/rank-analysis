@@ -26,6 +26,9 @@ jobs:
       - name: 安装依赖
         run: npm install
 
+      - name: 添加缺失的构建脚本
+        run: npm pkg set scripts.build="echo No build step"
+
       - name: 编译项目
         run: tauri build
 
