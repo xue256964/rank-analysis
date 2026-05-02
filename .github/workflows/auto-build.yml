@@ -25,8 +25,17 @@ jobs:
       - name: 安装依赖
         run: npm install
 
-      - name: 添加空构建脚本（跳过前置构建）
-        run: npm pkg set scripts.build="echo No build step"
+      - name: 创建前端占位文件（解决 “Unable to find your web assets”）
+        run: |
+          mkdir -p dist
+          echo "<!DOCTYPE html><html><body><h1>Placeholder</h1></body></html>" > dist/index.html
+
+      - name: 修改 tauri 配置指向 dist
+        run: |
+          # 备份原配置
+          cp src-tauri/tauri.conf.json src-tauri/tauri.conf.json.bak
+          # 修改 distDir 为相对路径 ../dist
+          (Get-Content src-tauri/tauri.conf.json -Raw) -replace '"distDir":\s*"[^"]*"', '"distDir": "../dist"' | Set-Content src-tauri/tauri.conf.json
 
       - name: 编译项目
         run: tauri build
