@@ -1,6 +1,8 @@
 name: ChampR集成构建并上传
+
 on:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: windows-latest
@@ -9,18 +11,23 @@ jobs:
         working-directory: lol-record-analysis-tauri
     steps:
       - uses: actions/checkout@v4
+
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - name: 安装 Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+
       - name: 安装前端依赖
         run: npm install
+
       - name: 构建 Tauri 应用
         run: |
           npm install -g @tauri-apps/cli
           npx tauri build
+
       - name: 上传到你的服务器
         shell: bash
         env:
