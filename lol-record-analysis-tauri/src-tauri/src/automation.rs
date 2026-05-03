@@ -409,6 +409,148 @@ async fn start_champion_select_automation() {
     }
 }
 
+/// 纯函数：将 config::Value 解析为 PickRule 列表。
+///
+/// - 非 array 形态（空字符串占位、Null、未初始化）静默返回空，不打日志。
+/// - 仅当真的是 array 但内容格式有误时才打 warn。
+fn parse_pick_rules_value(value: &Value) -> Vec<crate::command::rule_config::PickRule> {
+    use crate::command::rule_config::PickRule;
+    let json = match serde_json::to_value(value) {
+        Ok(j) => j,
+        Err(e) => {
+            log::warn!("Failed to bridge pickRules config Value -> JSON: {}", e);
+            return vec![];
+        }
+    };
+    // Config wraps user-facing values as { "value": <actual> }
+    let inner = json.get("value").cloned().unwrap_or(json);
+    if !inner.is_array() {
+        // 未配置 / 老的空字符串占位 — 不打日志，这不是错误
+        return vec![];
+    }
+    serde_json::from_value::<Vec<PickRule>>(inner).unwrap_or_else(|e| {
+        log::warn!("Failed to parse pickRules from config: {}", e);
+        vec![]
+    })
+}
+
+/// 纯函数：将 config::Value 解析为 BanRule 列表。
+///
+/// - 非 array 形态（空字符串占位、Null、未初始化）静默返回空，不打日志。
+/// - 仅当真的是 array 但内容格式有误时才打 warn。
+fn parse_ban_rules_value(value: &Value) -> Vec<crate::command::rule_config::BanRule> {
+    use crate::command::rule_config::BanRule;
+    let json = match serde_json::to_value(value) {
+        Ok(j) => j,
+        Err(e) => {
+            log::warn!("Failed to bridge banRules config Value -> JSON: {}", e);
+            return vec![];
+        }
+    };
+    let inner = json.get("value").cloned().unwrap_or(json);
+    if !inner.is_array() {
+        return vec![];
+    }
+    serde_json::from_value::<Vec<BanRule>>(inner).unwrap_or_else(|e| {
+        log::warn!("Failed to parse banRules from config: {}", e);
+        vec![]
+    })
+}
+
+/// 从配置中读取 pickRules 列表。
+///
+/// 配置缺失时返回空向量（视为"未配置规则"，走兜底逻辑）。
+async fn load_pick_rules() -> Vec<crate::command::rule_config::PickRule> {
+    match get_config("settings.auto.pickRules").await {
+        Ok(v) => parse_pick_rules_value(&v),
+        Err(_) => vec![],
+    }
+}
+
+/// 从配置中读取 banRules 列表。
+///
+/// 配置缺失时返回空向量（视为"未配置规则"，走兜底逻辑）。
+async fn load_ban_rules() -> Vec<crate::command::rule_config::BanRule> {
+    match get_config("settings.auto.banRules").await {
+        Ok(v) => parse_ban_rules_value(&v),
+        Err(_) => vec![],
+    }
+}
+
+/// 执行规则引擎命中后的 pick 动作。
+///
+/// 三种处理分支：
+/// 1. `is_in_progress && !completed`：按 `action.lock` 锁定或继续 hover。
+///    **例外**：`lock=false` 且当前已经 hover 了目标英雄时跳过，避免每 2s 重复 PATCH。
+/// 2. `my_picked_champion_id == 0 && !completed && !is_in_progress`：预选阶段始终 hover
+///    （`completed=false`），忽略 `lock` 标志。
+/// 3. 其他状态：no-op（已锁定 / 不轮到我等）。
+async fn execute_pick_action(
+    select_session: &crate::lcu::api::champion_select::SelectSession,
+    my_cell_id: i32,
+    action: &crate::command::rule_config::PickAction,
+) -> Result<(), String> {
+    let mut action_id = -1;
+    let mut is_in_progress = false;
+    let mut my_picked_champion_id = -1;
+    let mut completed = false;
+
+    for action_group in &select_session.actions {
+        if !action_group.is_empty() && action_group[0].action_type == "pick" {
+            for pick in action_group {
+                if pick.actor_cell_id == my_cell_id {
+                    completed = pick.completed;
+                    my_picked_champion_id = pick.champion_id;
+                    action_id = pick.id;
+                    if pick.is_in_progress {
+                        is_in_progress = true;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if action_id == -1 {
+        log::debug!("No pick action found for current player");
+        return Ok(());
+    }
+
+    if is_in_progress && !completed {
+        // 跳过冗余 PATCH：lock=false 且当前 hover 已是目标英雄，无需再次发送
+        if !action.lock && my_picked_champion_id == action.champion_id {
+            log::debug!(
+                "Rule action: champion {} already hovered, skipping redundant PATCH",
+                action.champion_id
+            );
+            return Ok(());
+        }
+        log::info!(
+            "Rule action: {} champion {} (in_progress)",
+            if action.lock { "locking" } else { "hovering" },
+            action.champion_id
+        );
+        patch_session_action(
+            action_id,
+            action.champion_id,
+            "pick".to_string(),
+            action.lock,
+        )
+        .await?;
+    } else if my_picked_champion_id == 0 && !completed && !is_in_progress {
+        // 预选阶段 — 始终 hover，忽略 lock 标志
+        log::info!(
+            "Rule action: hovering champion {} (pre-select)",
+            action.champion_id
+        );
+        patch_session_action(action_id, action.champion_id, "pick".to_string(), false).await?;
+    } else {
+        log::debug!("No pick action needed under current state");
+    }
+
+    Ok(())
+}
+
 /// 执行英雄选择操作。
 ///
 /// # 返回值
@@ -419,18 +561,47 @@ async fn start_champion_select_automation() {
 /// # 逻辑流程
 ///
 /// 1. 获取选人阶段会话信息
-/// 2. 从配置读取预设英雄列表
-/// 3. 排除已被禁用的英雄（敌方禁用）
-/// 4. 排除队友已选的英雄
-/// 5. 从预设列表中选择第一个可用英雄
-/// 6. 如果轮到我的选择回合：
-///    - 如果是锁定阶段：锁定英雄
-///    - 如果是预选阶段：预选英雄
+/// 2. **规则引擎（优先）**：若配置了 pickRules，按规则求值并执行；命中则返回
+/// 3. **兜底（pickChampionSlice）**：规则未配置或未命中时，走原有列表逻辑
 async fn start_select_champion() -> Result<(), String> {
     let select_session = get_champion_select_session().await?;
     let my_cell_id = select_session.local_player_cell_id;
     log::info!("Current player cell ID: {}", my_cell_id);
 
+    // ===== Rule engine (new) — try first; fall back to slice on miss =====
+    let rules = load_pick_rules().await;
+    if !rules.is_empty() {
+        let my_summoner = match crate::lcu::api::summoner::Summoner::get_my_summoner().await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Failed to get my summoner for rule engine: {}", e);
+                return start_select_champion_slice_fallback(&select_session, my_cell_id).await;
+            }
+        };
+        let my_pos = crate::rule_engine::detect_my_position(&select_session, &my_summoner.puuid);
+        if let Some(action) = crate::rule_engine::evaluate_pick(&select_session, my_pos, &rules) {
+            log::info!(
+                "Pick rule matched: champion={} lock={}",
+                action.champion_id,
+                action.lock
+            );
+            return execute_pick_action(&select_session, my_cell_id, action).await;
+        }
+        log::debug!("No pick rule matched, falling back to pickChampionSlice");
+    }
+    // ===== End rule engine =====
+
+    start_select_champion_slice_fallback(&select_session, my_cell_id).await
+}
+
+/// 兜底选人逻辑（原 `start_select_champion` 函数体）。
+///
+/// 从 `pickChampionSlice` 配置读取英雄列表，排除已 ban/已选英雄后，
+/// 选取第一个可用英雄执行 hover 或锁定。
+async fn start_select_champion_slice_fallback(
+    select_session: &crate::lcu::api::champion_select::SelectSession,
+    my_cell_id: i32,
+) -> Result<(), String> {
     let my_pick_champion_slice = match get_config("settings.auto.pickChampionSlice").await {
         Ok(Value::Map(m)) => {
             // Handle nested structure: { "value": [list] }
@@ -605,25 +776,101 @@ async fn start_champion_ban_automation() {
 
 /// 执行英雄禁用操作。
 ///
+/// 优先走规则引擎：若配置了 banRules 且有规则命中，直接执行对应 ban action。
+/// 否则回退到传统的 banChampionSlice 兜底逻辑。
+///
 /// # 返回值
 ///
 /// - `Ok(())`: 禁用操作完成（或无需操作）
 /// - `Err(String)`: 操作失败
-///
-/// # 逻辑流程
-///
-/// 1. 获取选人阶段会话信息
-/// 2. 从配置读取预设禁用英雄列表
-/// 3. 检查是否已经禁用（避免重复禁用）
-/// 4. 排除已被禁用的英雄（敌方或队友禁用）
-/// 5. 排除队友预选的英雄
-/// 6. 从预设列表中选择第一个可用英雄
-/// 7. 如果轮到我的禁用回合，执行禁用
 async fn start_ban_champion() -> Result<(), String> {
     let select_session = get_champion_select_session().await?;
     let my_cell_id = select_session.local_player_cell_id;
     log::info!("Current player cell ID: {}", my_cell_id);
 
+    let rules = load_ban_rules().await;
+    if !rules.is_empty() {
+        let my_summoner = match crate::lcu::api::summoner::Summoner::get_my_summoner().await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Failed to get my summoner for rule engine: {}", e);
+                return start_ban_champion_slice_fallback(&select_session, my_cell_id).await;
+            }
+        };
+        let my_pos = crate::rule_engine::detect_my_position(&select_session, &my_summoner.puuid);
+        if let Some(action) = crate::rule_engine::evaluate_ban(&select_session, my_pos, &rules) {
+            log::info!("Ban rule matched: champion={}", action.champion_id);
+            return execute_ban_action(&select_session, my_cell_id, action).await;
+        }
+        log::debug!("No ban rule matched, falling back to banChampionSlice");
+    }
+
+    start_ban_champion_slice_fallback(&select_session, my_cell_id).await
+}
+
+/// 执行 ban 规则的 action。
+///
+/// 仅当我自己的 ban 槽 `is_in_progress=true` 且未完成时才发请求；
+/// 否则视为时机不对（已完成 / 还没轮到）静默 no-op。
+async fn execute_ban_action(
+    select_session: &crate::lcu::api::champion_select::SelectSession,
+    my_cell_id: i32,
+    action: &crate::command::rule_config::BanAction,
+) -> Result<(), String> {
+    let mut action_id = -1;
+    let mut is_in_progress = false;
+    let mut already_completed = false;
+
+    for action_group in &select_session.actions {
+        if !action_group.is_empty() && action_group[0].action_type == "ban" {
+            for ban in action_group {
+                if ban.actor_cell_id == my_cell_id {
+                    if ban.completed {
+                        already_completed = true;
+                    }
+                    if ban.is_in_progress {
+                        action_id = ban.id;
+                        is_in_progress = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if already_completed {
+        log::debug!("Ban already completed");
+        return Ok(());
+    }
+    if action_id == -1 || !is_in_progress {
+        log::debug!("No ban action in progress for current player");
+        return Ok(());
+    }
+
+    log::info!("Rule action: banning champion {}", action.champion_id);
+    crate::lcu::api::champion_select::patch_session_action(
+        action_id,
+        action.champion_id,
+        "ban".to_string(),
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
+/// 兜底禁用逻辑：使用配置的 banChampionSlice 列表依序选择可用英雄执行禁用。
+///
+/// # 逻辑流程
+///
+/// 1. 从配置读取预设禁用英雄列表
+/// 2. 检查是否已经禁用（避免重复禁用）
+/// 3. 排除已被禁用的英雄（敌方或队友禁用）
+/// 4. 排除队友预选的英雄
+/// 5. 从预设列表中选择第一个可用英雄
+/// 6. 如果轮到我的禁用回合，执行禁用
+async fn start_ban_champion_slice_fallback(
+    select_session: &crate::lcu::api::champion_select::SelectSession,
+    my_cell_id: i32,
+) -> Result<(), String> {
     let my_ban_champion_slice = match get_config("settings.auto.banChampionSlice").await {
         Ok(Value::Map(m)) => {
             // Handle nested structure: { "value": [list] }
@@ -937,4 +1184,95 @@ pub async fn start_automation() {
     });
 
     log::info!("========== Automation System Started ==========");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // 构造一条最小化的 PickRule JSON
+    fn pick_rule_json(id: &str, champion_id: i32, lock: bool) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": "test rule",
+            "enabled": true,
+            "conditions": [],
+            "action": { "champion_id": champion_id, "lock": lock }
+        })
+    }
+
+    // 构造一条最小化的 BanRule JSON
+    fn ban_rule_json(id: &str, champion_id: i32) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": "test ban rule",
+            "enabled": true,
+            "conditions": [],
+            "action": { "champion_id": champion_id }
+        })
+    }
+
+    // ──────────────────── parse_pick_rules_value ────────────────────
+
+    #[test]
+    fn parse_pick_rules_returns_empty_for_empty_string_value() {
+        // 模拟 zero_value_for_key 对 "Rules" 后缀键返回的默认值
+        let v = Value::String(String::new());
+        assert!(parse_pick_rules_value(&v).is_empty());
+    }
+
+    #[test]
+    fn parse_pick_rules_returns_empty_for_null_value() {
+        let v = Value::Null;
+        assert!(parse_pick_rules_value(&v).is_empty());
+    }
+
+    #[test]
+    fn parse_pick_rules_handles_value_envelope() {
+        // 前端 put_config 的形态：{ "value": [PickRule, ...] }
+        let mut map = HashMap::new();
+        map.insert(
+            "value".to_string(),
+            Value::List(vec![serde_json::from_value::<Value>(pick_rule_json(
+                "r1", 99, true,
+            ))
+            .unwrap()]),
+        );
+        let v = Value::Map(map);
+        let rules = parse_pick_rules_value(&v);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "r1");
+        assert_eq!(rules[0].action.champion_id, 99);
+        assert!(rules[0].action.lock);
+    }
+
+    #[test]
+    fn parse_pick_rules_handles_bare_list() {
+        // 旧版本或直接存 List 形态
+        let item: Value = serde_json::from_value(pick_rule_json("r1", 1, false)).unwrap();
+        let v = Value::List(vec![item]);
+        let rules = parse_pick_rules_value(&v);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].action.champion_id, 1);
+        assert!(!rules[0].action.lock);
+    }
+
+    // ──────────────────── parse_ban_rules_value ────────────────────
+
+    #[test]
+    fn parse_ban_rules_returns_empty_for_empty_string_value() {
+        let v = Value::String(String::new());
+        assert!(parse_ban_rules_value(&v).is_empty());
+    }
+
+    #[test]
+    fn parse_ban_rules_handles_bare_list() {
+        let item: Value = serde_json::from_value(ban_rule_json("b1", 55)).unwrap();
+        let v = Value::List(vec![item]);
+        let rules = parse_ban_rules_value(&v);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "b1");
+        assert_eq!(rules[0].action.champion_id, 55);
+    }
 }
