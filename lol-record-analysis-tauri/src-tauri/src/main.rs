@@ -6,8 +6,26 @@ use lol_record_analysis_app_lib::lcu::api::asset as asset_api;
 use lol_record_analysis_app_lib::state::AppState;
 use lol_record_analysis_app_lib::{automation, command};
 use tauri::Manager;
+use tauri_plugin_shell::ShellExt;
 
-// NOTE: main is no longer async
+// ========== ChampR 一键应用出装 ==========
+#[tauri::command]
+async fn apply_champion_build(app_handle: tauri::AppHandle, champion: String) -> Result<String, String> {
+    let output = app_handle.shell()
+        .sidecar("binaries/champ-r")
+        .map_err(|e| e.to_string())?
+        .args(["--champion", &champion, "--mode", "aram", "--apply"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
+}
+// =========================================
+
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // 初始化日志，默认 info 级别，可通过 RUST_LOG 环境变量覆盖
     if std::env::var("RUST_LOG").is_err() {
@@ -113,6 +131,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             command::session::get_session_data,
             command::fandom::update_fandom_data,
             command::fandom::get_aram_balance,
+            apply_champion_build, // ChampR 集成
         ]);
 
     app_builder = app_builder.setup(move |app| {
