@@ -1,55 +1,36 @@
-name: 自动编译LOL分析工具
+name: Auto Build LOL Analysis Tool
 
-# 手动触发，可选系统
 on:
   workflow_dispatch:
-    inputs:
-      系统:
-        description: '选择编译环境'
-        required: true
-        default: 'windows'
-        type: choice
-        options:
-          - windows
-          - ubuntu
-          - macos
 
 jobs:
-  构建:
-    runs-on: ${{ github.event.inputs.系统 }}-latest
+  build-windows:
+    runs-on: windows-latest
 
     steps:
-      - name: 检出代码
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 安装 Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: 安装 Rust 工具链
+      - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           profile: minimal
           override: true
 
-      # Linux 需要系统库，否则编译Tauri会失败
-      - name: 安装Linux依赖
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: 安装项目依赖
+      - name: Install dependencies
         run: npm install
 
-      - name: 编译生产版本
+      - name: Build production
         run: npm run tauri build
 
-      # 上传产物（安装包、可执行文件）
-      - name: 上传构建结果
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 分析工具-${{ runner.os }}
+          name: analysis-tool-windows
           path: src-tauri/target/release/bundle/**
