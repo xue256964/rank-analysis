@@ -1,4 +1,4 @@
-name: ChampR集成构建（仅编译）
+name: ChampR集成构建并上传
 
 on:
   workflow_dispatch:
@@ -23,15 +23,29 @@ jobs:
       - name: 安装前端依赖
         run: npm install
 
+      - name: 设置更新签名私钥
+        run: echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_PRIVATE_KEY }}" >> $GITHUB_ENV
+      - name: 设置签名私钥密码（无密码则留空）
+        run: echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> $GITHUB_ENV
+
       - name: 构建 Tauri 应用
         run: |
           npm install -g @tauri-apps/cli
           npx tauri build
 
-      - name: 保存构建产物（可在 Actions 页面下载）
-        uses: actions/upload-artifact@v4
-        with:
-          name: 安装包
-          path: |
-            lol-record-analysis-tauri/src-tauri/target/release/bundle/msi/*.msi
-            lol-record-analysis-tauri/src-tauri/target/release/bundle/nsis/*.exe
+      - name: 上传到你的服务器
+        shell: bash
+        env:
+          HOST: ${{ secrets.SERVER_HOST }}
+          USER: ${{ secrets.SERVER_USER }}
+          KEY: ${{ secrets.SERVER_SSH_KEY }}
+          PATH: ${{ secrets.SERVER_PATH }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H $HOST >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+            src-tauri/target/release/bundle/msi/*.msi \
+            src-tauri/target/release/bundle/nsis/*.exe \
+            ${USER}@${HOST}:${PATH}/
