@@ -48,10 +48,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM2Mzg1MkEyODFGMTdBNTAKUldSUWV2R0JvbEk0TnF1VGlJT1lWUjhTRFRZWjRzTjcxWVNrTjRsbGl4N3g1M0xqQ25UY21DN1MK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEREMEJCMURDQTE5NKI1QTIKULDtaXRayWgzTEVM1dXRWLxbkhchcLhCSkJDUzLWWM4bmtHWgdLbkdlYjAwbUFhNDdIKzZsWGYK",
       "endpoints": [
-        "https://api.upgrade.toolsetlink.com/v1/tauri/upgrade?tauriKey=rX76p0GShXom2yNnlsSDYw&versionName={{current_version}}&target={{target}}&arch={{arch}}",
-        "https://github.com/wnzzer/rank-analysis/releases/latest/download/latest.json"
+        "http://122.51.249.229/latest.json"
       ],
       "createUpdaterArtifacts": true,
       "dangerousInsecureTransportProtocol": true
